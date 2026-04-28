@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Sparkles } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '@context/AuthContext';
 import { ConfirmModal } from '@shared/components/ConfirmModal';
 import { PageSectionHeader } from '@shared/components/layout/PageSectionHeader';
@@ -9,13 +9,15 @@ import { SurfacePanel } from '@shared/components/layout/SurfacePanel';
 import { buildRequestSignature, useRequestDeduper } from '@shared/hooks/useRequestDeduper';
 import { getSelectedUniversityDisplayName } from '@shared/utils/universityContext';
 import { getScheduleVersionsPaginated } from '../api/scheduleGeneratorApi';
+import { ScheduleGenerationOptionsModal } from '../components/ScheduleGenerationOptionsModal';
 import { ScheduleVersionHistoryPanel } from '../components/ScheduleVersionHistoryPanel';
+import { TeacherAvailabilityErrorModal } from '../components/TeacherAvailabilityErrorModal';
 import { useScheduleGenerator } from '../hooks/useScheduleGenerator';
 
 const PAGE_SIZE = 6;
 
-const getContextLabel = (selectedUniversityName, activeAcademicPeriodName) => {
-  if (!activeAcademicPeriodName) {
+const getContextLabel = (selectedUniversityName, activeAcademicPeriodName, usesPeriodGroups) => {
+  if (!usesPeriodGroups || !activeAcademicPeriodName) {
     return `Contexto: ${selectedUniversityName}`;
   }
 
@@ -27,6 +29,7 @@ export const ScheduleGeneratorPage = () => {
   const navigate = useNavigate();
   const selectedUniversity = user?.selected_university;
   const selectedUniversityId = Number(selectedUniversity?.id) || null;
+  const activeAcademicPeriodId = user?.selected_university_active_period_id || null;
 
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
@@ -37,6 +40,10 @@ export const ScheduleGeneratorPage = () => {
   const [generateModalOpen, setGenerateModalOpen] = useState(false);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, version: null });
   const [deleteModal, setDeleteModal] = useState({ isOpen: false, version: null });
+  const [teacherAvailabilityError, setTeacherAvailabilityError] = useState({
+    isOpen: false,
+    teachers: [],
+  });
 
   const { shouldRun } = useRequestDeduper({ windowMs: 150 });
 
@@ -106,11 +113,21 @@ export const ScheduleGeneratorPage = () => {
     navigate(`/usuario/universidad/generar-horario/ver/${versionId}`);
   };
 
-  const handleGenerateSchedule = async () => {
-    const result = await generateScheduleVersion();
+  const handleGenerateSchedule = async (parameters) => {
+    const result = await generateScheduleVersion(activeAcademicPeriodId, parameters);
 
     if (!result?.success) {
       if (!result?.deduped) {
+        const teachersList = Array.isArray(result?.errorData?.teachers)
+          ? result.errorData.teachers
+          : [];
+
+        if (teachersList.length > 0) {
+          setGenerateModalOpen(false);
+          setTeacherAvailabilityError({ isOpen: true, teachers: teachersList });
+          return;
+        }
+
         toast.error(result?.message || 'No se pudo generar el horario.');
       }
       return;
@@ -290,14 +307,12 @@ export const ScheduleGeneratorPage = () => {
         </div>
       </SurfacePanel>
 
-      <ConfirmModal
+      <ScheduleGenerationOptionsModal
         isOpen={generateModalOpen}
         onClose={() => setGenerateModalOpen(false)}
-        onConfirm={handleGenerateSchedule}
-        title="Generar horario"
-        message="Se regenerara el borrador activo con los datos institucionales del backend. ¿Deseas continuar?"
-        confirmLabel="Generar"
-        closeOnConfirm={false}
+        onGenerate={handleGenerateSchedule}
+        isGenerating={pendingAction?.type === 'generate'}
+        initialParameters={null}
       />
 
       <ConfirmModal
@@ -318,6 +333,12 @@ export const ScheduleGeneratorPage = () => {
         message={`¿Deseas eliminar el borrador "${deleteModal?.version?.label || 'Seleccionado'}"?`}
         confirmLabel="Eliminar"
         closeOnConfirm={false}
+      />
+
+      <TeacherAvailabilityErrorModal
+        isOpen={teacherAvailabilityError.isOpen}
+        onClose={() => setTeacherAvailabilityError({ isOpen: false, teachers: [] })}
+        teachers={teacherAvailabilityError.teachers}
       />
     </div>
   );

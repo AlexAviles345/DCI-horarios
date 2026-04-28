@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { buildRequestSignature, useRequestDeduper } from '@shared/hooks/useRequestDeduper';
 import {
+  createUniversity,
   deleteUniversityLogo,
   getUniversityImage,
   getUniversitiesPaginated,
@@ -7,6 +9,7 @@ import {
   getPeriodTypes,
   postFullUniversitySetup,
   putFullUniversitySetup,
+  updateUniversity,
   uploadUniversityLogo,
   deleteUniversity as deleteUniversityRequest,
 } from '../api/universitiesApi';
@@ -37,6 +40,9 @@ export const useUniversities = () => {
   const listFetchIdRef = useRef(0);
   const listImageUrlsRef = useRef([]);
   const profileImageUrlRef = useRef(null);
+  const profileImageFetchingRef = useRef(null);
+
+  const { shouldRun: shouldRunProfileImage } = useRequestDeduper({ windowMs: 500 });
 
   const revokeObjectUrl = useCallback((value) => {
     if (typeof value === 'string' && value.startsWith('blob:')) {
@@ -190,10 +196,16 @@ export const useUniversities = () => {
 
       let imageUrl = null;
       if (data.image && data.id) {
-        try {
-          imageUrl = await fetchUniversityImageUrl(data.id);
-        } catch {
-          imageUrl = null;
+        const imgSignature = buildRequestSignature({ universityId: data.id, hasImage: true }, ['universityId', 'hasImage']);
+        if (profileImageFetchingRef.current !== data.id && shouldRunProfileImage(imgSignature)) {
+          profileImageFetchingRef.current = data.id;
+          try {
+            imageUrl = await fetchUniversityImageUrl(data.id);
+          } catch {
+            imageUrl = null;
+          } finally {
+            profileImageFetchingRef.current = null;
+          }
         }
       }
 
@@ -208,12 +220,48 @@ export const useUniversities = () => {
     } finally {
       setProfileLoading(false);
     }
-  }, [fetchUniversityImageUrl, resetProfileImageUrl]);
+  }, [fetchUniversityImageUrl, resetProfileImageUrl, shouldRunProfileImage]);
 
   const clearUniversityProfile = useCallback(() => {
     resetProfileImageUrl();
     setUniversityProfile(null);
   }, [resetProfileImageUrl]);
+
+  const createUniversityBase = useCallback(async (payload, logoFile) => {
+    setCreateLoading(true);
+    try {
+      const response = await createUniversity(payload.university);
+      const newId = response?.data?.data?.id;
+      
+      if (logoFile && newId) {
+        try {
+          await uploadUniversityLogo(newId, logoFile);
+        } catch (uploadError) {
+          console.error('La universidad se creó, pero el logo falló', uploadError);
+        }
+      }
+      return { data: { data: { university_id: newId } } };
+    } finally {
+      setCreateLoading(false);
+    }
+  }, []);
+
+  const updateUniversityBase = useCallback(async (id, payload, logoFile, removeLogo) => {
+    setUpdateLoading(true);
+    try {
+      await updateUniversity(id, payload.university);
+      
+      if (removeLogo) {
+        await deleteUniversityLogo(id);
+      } else if (logoFile) {
+        await uploadUniversityLogo(id, logoFile);
+      }
+      
+      return true;
+    } finally {
+      setUpdateLoading(false);
+    }
+  }, []);
 
   const createUniversityFullSetup = useCallback(async (payload, logoFile) => {
     setCreateLoading(true);
@@ -280,8 +328,10 @@ export const useUniversities = () => {
     fetchUniversities,
     periodTypeOptions,
     fetchPeriodTypes,
-    createUniversityFullSetup,
-    updateUniversityFullSetup,
+    createUniversityBase,
+    updateUniversityBase,
+    createUniversityFullSetup: createUniversityBase, // Mantener nombre temporalmente
+    updateUniversityFullSetup: updateUniversityBase, // Mantener nombre temporalmente
     createLoading,
     updateLoading,
     universityProfile,
